@@ -1,0 +1,261 @@
+---
+title: "JHU Data Science Capstone Milestone Report"
+author: "Shuai Wang"
+date: "Saturday, July 25, 2015"
+output: html_document
+---
+
+## Introduction
+
+This is the milestone report for the Data Science Capstone project in the Johns Hopkins University Data Science Coursera Specialization. The purpose of this project is to predict the next word for incomplete sentences. In this report, I am required to display that I've gotten used to working with the data and that I am on track to create my prediction algorithm. The motivation for this project is to:
+
+1. Demonstrate that I've downloaded the data and have successfully loaded it in.
+2. Create a basic report of summary statistics about the data sets.
+3. Report any interesting findings that I amassed so far.
+4. Get feedback on my plans for creating a prediction algorithm and Shiny app.
+
+## Data Downloading and Cleaning
+
+First, I download the data file from the coursera website and unzipp it. The data downloaded contains four language versions, and I choose English version (en_US version) to proceed. Then I get three text files collected from blogs, news, and twitter.
+
+These files are consisted with lines, and different lines represent different documents. Those lines are far from uniform in terms of encoding and language. Some lines contain characters `R` does not recognize, and `R` even stops reading further because of some special character. Thus I have to manually remove it to fully read in all data.
+
+Now we can calculate the number of lines contained in those files as follows:
+
+```{r,echo=FALSE}
+blogscon<-file("en_US.blogs.txt","r")
+newscon<-file("en_US.news_alt.txt","r")
+twitcon<-file("en_US.twitter.txt","r")
+#the number of lines
+numline<-function(eachcon){
+linenum<-0
+line<-readLines(eachcon, 1)
+while(length(line)){
+    linenum<-linenum+1
+    line<-readLines(eachcon, 1)
+}
+close(eachcon)
+linenum
+}
+#the number of lines and words
+numlineword<-function(eachcon){
+linenum<-0
+wordnum<-NULL
+line<-readLines(eachcon, 1)
+while(length(line)){
+    linenum<-linenum+1
+    line<-gsub('[^A-Za-z0-9 ]',' ',line)
+    line<-gsub(' +',' ',line)
+    line<-unlist(strsplit(line,' '))
+    line<-line[line!=""]
+    wordnum[linenum]<-length(line)
+    line<-readLines(eachcon, 1)
+}
+close(eachcon)
+summ<-summary(wordnum)
+list(linenum,summ)
+}
+
+```
+
+```{r,echo=FALSE,cache=TRUE}
+blogsct<-numline(blogscon)
+newsct<-numline(newscon)
+twitct<-numline(twitcon)
+textfilesumm<-c(blogsct,newsct,twitct)
+names(textfilesumm)<-c("en_US.blogs.txt","en_US.news.txt","en_US.twitter.txt")
+textfilesumm
+```
+
+So there are about one or two million lines in each text file. It is time consuming to process all of them, so I sample three smaller text files from them, and use them for my training purpose. After sampling, I also correct the encoding without loss of any information, such as replacing the latin1-encoded left and right double quotation marks by `"`. Now we count the number of lines for the three samples got. This time we can get the word counts and their distributions (symbols are not counted), as the computation power of my laptop is enough for these smaller files.
+
+```{r,echo=FALSE}
+sampleblogs<-file("sample.blogs.txt","r")
+samplenews<-file("sample.news.txt","r")
+sampletwit<-file("sample.twits.txt","r")
+blogscount<-numlineword(sampleblogs)
+newscount<-numlineword(samplenews)
+twitcount<-numlineword(sampletwit)
+linecount<-c(blogscount[[1]],newscount[[1]],twitcount[[1]])
+samplefilesumm<-cbind(linecount, rbind(blogscount[[2]],newscount[[2]],twitcount[[2]]))
+dimnames(samplefilesumm)<-list(c("sample.blogs.txt","sample.news.txt","sample.twits.txt"),
+    c("Line.Count","Min.Word.Count","1st Qu.Word.Count","Median.Word.Count","Mean.Word.Count","3rd Qu.Word.Count","Max.Word.Count"))
+samplefilesumm
+```
+
+It is clear that the lines in the twitter file contains fewer words than those of blogs and news, and number of words for lines in blogs vary more than those in news. 
+
+## Term Frequency Exploration
+
+I think each text file should be treated differently, as they are in different circumstances. As the exploratory results of the three are similar, I only focus on one text file in this report, the sample blog text file.
+
+```{r,echo=FALSE}
+con<-file("sample.blogs.txt","r")
+someblogs<-readLines(con,encoding="Latin1")
+close(con)
+library(tm)
+someblogs<-VCorpus(VectorSource(someblogs))
+```
+
+As we still have few characters unrecognizable by `R`, I think it is safe to remove them because their percentage is small. For the symbols, I still keep them, but separate them from their attaching words. For dollar amounts, non-dollar-amount numbers and time, I unify their representations respectively, because I think keeping those numbers different does not make much sense for our purpose. I also convert all alphabetic words to lower case. Hyphens are retained if they are in the middle of words, and contracted forms are expanded. `#` is coded appropriately so a phrase like "#1" is coded as "number 1". I have also removed the profanity words that I do not want to predict.
+
+```{r,echo=FALSE}
+#preprocessing functions
+preprocess<-function(line){
+line<-gsub(']','}',line) #change [] to {} to facilitate strange character removing
+line<-gsub('\\[','{',line)
+line<-gsub('[^-A-Za-z0-9 ,.!?%&()+=_:;\'\"~`@#$^*<>\\/|{}]',' ',line) #remove strange characters
+line<-tolower(line)
+line<-gsub('[^ ]*<u\\+([0-9a-f]){4,4}>[^ ]*',' ',line) #remove unrecognized UTF-8 codes
+line<-gsub('-+ | -+',' ',line) #remove heading or tailing -
+#expand the contracted forms (choose is between is/has, and would between had/would)
+line<-gsub("`","'",line)
+line<-gsub("i'm","i am",line)
+line<-gsub("i'd","i would",line) #had/would
+line<-gsub("he's","he is",line) #is/has
+line<-gsub("he'd","he would",line) #had/would
+line<-gsub("she's","she is",line) #is/has
+line<-gsub("she'd","she would",line) #had/would
+line<-gsub("it's","it is",line) #is/has
+line<-gsub("it'd","it would",line) #had/would
+line<-gsub("you're","you are",line)
+line<-gsub("you'd","you would",line) #had/would
+line<-gsub("we're","we are",line)
+line<-gsub("we'd","we would",line) #had/would
+line<-gsub("they're","they are",line)
+line<-gsub("they'd","they would",line) #had/would
+line<-gsub("'ve"," have",line)
+line<-gsub("'ll"," will",line)
+line<-gsub("can't|cannot","can not",line)
+line<-gsub("shan't","shall not",line)
+line<-gsub("won't","will not",line)
+line<-gsub("n't"," not",line)
+line<-gsub("let's","let us",line)
+line<-gsub('#',' number ',line) #so '#1' can be recoded as 'number 1'
+#unifying money, time, and number
+line<-gsub('\\$[0-9]+((,[0-9]+)*)(.[0-9]+)?','$$',line)
+line<-gsub('([0-9]){1,2}(:([0-9]){1,2})+','#time#',line)
+line<-gsub('[0-9]+((,[0-9]+)*)(.[0-9]+)?','##',line)
+#separate the punctuations
+line<-gsub('[,]',' , ',line)
+line<-gsub('[.]',' . ',line)
+line<-gsub('[!]',' ! ',line)
+line<-gsub('[?]',' ? ',line)
+line<-gsub('[(]',' ( ',line)
+line<-gsub('[)]',' ) ',line)
+line<-gsub('[:]',' : ',line)
+line<-gsub('[;]',' ; ',line)
+line<-gsub('[\"]',' \" ',line)
+line<-gsub('[~]',' ~ ',line)
+line<-gsub('[+]',' + ',line)
+line<-gsub('[=]',' = ',line)
+line<-gsub('[*]',' * ',line)
+line<-gsub('[\\]',' / ',line) #cannot output '\', so use '/'
+line<-gsub('[/]',' / ',line)
+line<-gsub('[|]',' | ',line)
+line<-gsub('[{]',' { ',line)
+line<-gsub('[}]',' } ',line)
+#profanity words removal
+line<-gsub('ass|asshole|damn|goddamn|damnit|damned|fuck|fucked|fucking',' ',line)
+}
+#for adjacent word investigation
+someblogs<-tm_map(someblogs,content_transformer(preprocess))
+someblogs<-tm_map(someblogs,stripWhitespace)
+```
+
+Notice that we haven't removed stopwords yet. Let's see if we need do it. Get the words with term frequencies over 400 as follows:
+
+```{r,echo=FALSE}
+#document-term-matrix
+dtm<-DocumentTermMatrix(someblogs)
+freqterm<-findFreqTerms(dtm,400)
+freqterm
+```
+
+The top 20 frequent words with their frequencies are listed below:
+
+```{r,echo=FALSE}
+library(slam)
+termfreq<-rollup(dtm,1,FUN=sum)
+termfreq<-as.matrix(termfreq)
+termname<-dimnames(termfreq)$Terms
+termfreq<-as.vector(termfreq)
+names(termfreq)<-termname
+termfreq<-sort(termfreq,decreasing=T)
+head(termfreq,20)
+```
+
+Look at the distribution of the term frequencies as follows:
+
+```{r,echo=FALSE}
+hist(termfreq,col="green",xlab="Term Frequency",main="Histogram of Term Frequency")
+```
+
+So we can see that some certain words occur extremely frequently, like "the" and "and", and most of the words have relatively low frequencies. However, those frequent words may be helpful in our prediction, as the next word to be predicted might be "the" or "and", or some other frequent words. But now, for our exploration, we might want to remove those stopwords and see what happens. I also remove the punctuations, but I do not stem the words yet.
+
+```{r,echo=FALSE}
+#for whole document investigation
+someblogs<-tm_map(someblogs,removeWords,stopwords("english"))
+someblogs<-tm_map(someblogs,removePunctuation)
+someblogs<-tm_map(someblogs,stripWhitespace)
+#someblogs<-tm_map(someblogs,stemDocument)
+```
+
+Now the words with term frequencies over 400 become:
+
+```{r,echo=FALSE}
+#document-term-matrix
+dtm<-DocumentTermMatrix(someblogs)
+freqterm<-findFreqTerms(dtm,400)
+freqterm
+```
+
+And the top 20 frequent words with their frequencies after stopword removal are:
+
+```{r,echo=FALSE}
+termfreq<-rollup(dtm,1,FUN=sum)
+termfreq<-as.matrix(termfreq)
+termname<-dimnames(termfreq)$Terms
+termfreq<-as.vector(termfreq)
+names(termfreq)<-termname
+termfreq<-sort(termfreq,decreasing=T)
+head(termfreq,20)
+```
+
+The distribution of the term frequencies this time is:
+
+```{r,echo=FALSE}
+hist(termfreq,col="green",xlab="Term Frequency",main="Histogram of Term Frequency")
+```
+
+```{r,echo=FALSE}
+assocs<-unlist(findAssocs(dtm,"bacon",0.2))
+baconBBQ<-dtm[,c("bacon","barbeque","onion","beer")]
+baconBBQ<-as.matrix(baconBBQ)
+bothappear<-NULL
+bothappear[1]<-sum(baconBBQ[,1]!=0) #"bacon" appears 11 times
+bothappear[2]<-sum(baconBBQ[,1]!=0 & baconBBQ[,2]!=0) #"bacon" and "barbeque" appear together only once
+bothappear[3]<-sum(baconBBQ[,1]!=0 & baconBBQ[,3]!=0) #"bacon" and "onion" appear together 4 times
+bothappear[4]<-sum(baconBBQ[,1]!=0 & baconBBQ[,4]!=0) #"bacon" and "beer" does not appear together
+names(bothappear)<-c("bacon","bacon&barbeque","bacon&onion","bacon&beer")
+```
+
+We can see that the distribution is still skewed. We may include more words as stopwords in the further exploration. But I don't want to do it now. I want to directly calculate the frequency for some randomly chosen not-that-frequent word, say "bacon". After computation, its frequency in my sample blog dataset is `r bothappear[1]`. So it very seldomly occurs, considering our sample blog data contains about 10,000 lines, and each line contains dozens of words in average.
+
+Therefore, we have such a low frequency even for a not-so-rare word. Given such a low frequency, how can I do statistical prediciton based on it? Not to speak of n-grams. One way to address it is to do stemming. So I have also tried it, and I get `13` as its frequency, not a big improvement. Another way to address it is to increase the sample size. I have tried my analysis on one of the three original text files, and it takes hours to run even for counting the words. So my next step is to increase the sampling probability to get a tradeoff between term frequency and computation power. Or is there any one of you who can help me to get free access to cloud computing? Then I can work on more data and get a more accurate prediction. I also need help with working with n-grams, as I don't know how to do it. Currently I am using the `tm` package in `R`. I am new to it, and I don't know if there is any such feature there.
+
+## Term Association Exploration
+
+Although we have low sample size problem and the result may be unreliable in theory, we can still explore word associations. Still take "bacon" as an example, the following are the words whose correlations with "bacon" are above `0.2`:
+
+```{r,echo=FALSE}
+assocs
+```
+
+Let's explore how many times they appear together. I choose the most and the least correlated words "barbeque" and "onion" in the above list, and also include "beer", as it appears in the quiz we encounter this week.
+
+```{r,echo=FALSE}
+bothappear[2:4]
+```
+
+From the result, we can see that it is impossible to predict "beer" if using the word "bacon" and this sample blog text file. To improve prediction, my current plan is to increase the training sample size a little bit depending on my computation power. Of course, if I have access to more computation power and more data, I will have a totally different plan, including exploring n-grams, which I don't know how to do and also need your help.
